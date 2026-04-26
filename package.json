@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-mail-engine",
   "version": "1.1.0",
-  "description": "WhatsApp to Email bridge with MongoDB Session",
+  "description": "WhatsApp to Email bridge with MongoDB RemoteAuth",
   "main": "index.js",
   "dependencies": {
     "whatsapp-web.js": "^1.23.0",
@@ -12,5 +12,8 @@
   },
   "scripts": {
     "start": "node index.js"
+  },
+  "engines": {
+    "node": "18.x"
   }
 }
