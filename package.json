@@ -1,15 +1,16 @@
 {
   "name": "whatsapp-mail-engine",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "description": "WhatsApp to Email bridge with MongoDB Session",
   "main": "index.js",
   "dependencies": {
     "whatsapp-web.js": "^1.23.0",
     "qrcode-terminal": "^0.12.0",
     "nodemailer": "^6.9.0",
-    "sqlite3": "^5.1.0"
+    "mongoose": "^7.5.0",
+    "wwebjs-mongo": "^1.1.0"
   },
   "scripts": {
     "start": "node index.js"
   }
-  npm install sqlite3
 }
