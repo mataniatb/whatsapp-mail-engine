@@ -1,0 +1,21 @@
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const express = require('express');
+const app = express();
+
+const client = new Client({
+    authStrategy: new LocalAuth()
+});
+
+client.on('qr', (qr) => {
+    console.log('סרוק את הקוד הזה בבקשה:');
+    qrcode.generate(qr, {small: true});
+});
+
+client.on('ready', () => {
+    console.log('וואטסאפ מחובר בהצלחה!');
+});
+
+app.get('/', (req, res) => res.send('המנוע פועל!'));
+app.listen(process.env.PORT || 3000);
+client.initialize();
