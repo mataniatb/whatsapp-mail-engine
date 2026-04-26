@@ -4,7 +4,14 @@ const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
 const { MongoStore } = require('wwebjs-mongo');
 
-// 1. הגדרת שירות המייל (Gmail)
+// בדיקה: האם המשתנה הוגדר ב-Railway?
+const uri = process.env.MONGODB_URI;
+
+if (!uri) {
+    console.error("CRITICAL ERROR: MONGODB_URI is missing in Railway Variables!");
+    process.exit(1);
+}
+
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
@@ -13,17 +20,16 @@ const transporter = nodemailer.createTransport({
     }
 });
 
-// 2. חיבור למסד הנתונים במונגו
-mongoose.connect(process.env.MONGODB_URI).then(() => {
-    console.log('מחובר ל-MongoDB Atlas בהצלחה!');
+// חיבור למונגו
+mongoose.connect(uri).then(() => {
+    console.log('Connected to MongoDB Atlas!');
     
     const store = new MongoStore({ mongoose: mongoose });
 
-    // 3. הגדרת לקוח הוואטסאפ עם RemoteAuth
     const client = new Client({
         authStrategy: new RemoteAuth({
             store: store,
-            backupSyncIntervalMs: 300000 // גיבוי כל 5 דקות
+            backupSyncIntervalMs: 300000
         }),
         puppeteer: {
             executablePath: '/usr/bin/chromium',
@@ -31,42 +37,33 @@ mongoose.connect(process.env.MONGODB_URI).then(() => {
         }
     });
 
-    // הצגת QR לסריקה (רק בפעם הראשונה)
     client.on('qr', (qr) => {
-        console.log('סרוק את הקוד בטלפון:');
+        console.log('סרוק את ה-QR בטלפון:');
         qrcode.generate(qr, { small: true });
     });
 
-    // אישור שה-Session נשמר בענן
+    client.on('ready', () => console.log('WhatsApp Bot is READY!'));
+    
     client.on('remote_session_saved', () => {
-        console.log('החיבור נשמר ב-MongoDB! לא תצטרך לסרוק שוב.');
+        console.log('Session saved to MongoDB successfully.');
     });
 
-    client.on('ready', () => {
-        console.log('הבוט באוויר ומוכן להעביר הודעות!');
-    });
-
-    // 4. לוגיקת העברת הודעות למייל
     client.on('message', async (msg) => {
         try {
             const contact = await msg.getContact();
-            const senderName = contact.pushname || contact.number;
-
-            const mailOptions = {
+            await transporter.sendMail({
                 from: process.env.EMAIL_USER,
                 to: process.env.DESTINATION_EMAIL,
-                subject: `וואטסאפ מ-${senderName}`,
-                text: `תוכן ההודעה: ${msg.body}\nמאת: ${contact.number}`
-            };
-
-            await transporter.sendMail(mailOptions);
-            console.log(`מייל נשלח עבור הודעה מ-${senderName}`);
+                subject: `WhatsApp from ${contact.pushname || contact.number}`,
+                text: msg.body
+            });
+            console.log('Email sent.');
         } catch (err) {
-            console.error('שגיאה בשליחת המייל:', err);
+            console.error('Mail error:', err);
         }
     });
 
     client.initialize();
 }).catch(err => {
-    console.error('שגיאה קריטית בחיבור ל-MongoDB:', err);
+    console.error('MongoDB connection error:', err);
 });
