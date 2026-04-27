@@ -1,90 +1,72 @@
-const { Client, RemoteAuth } = require('whatsapp-web.js');
-const { MongoStore } = require('wwebjs-mongo');
-const mongoose = require('mongoose');
-const { google } = require('googleapis');
 const express = require('express');
-const qrcode = require('qrcode-terminal');
-const { simpleParser } = require('mailparser');
-
+const mongoose = require('mongoose');
+const fs = require('fs');
+const { execSync } = require('child_process');
 const app = express();
-// Railway מזריק את הפורט הזה אוטומטית
-const port = process.env.PORT || 3000;
 
-// הגדרות סכימה למסד הנתונים
-const TokenSchema = new mongoose.Schema({ userId: String, tokens: Object });
-const MsgMapSchema = new mongoose.Schema({ waMsgId: String, threadId: String, fromEmail: String, subject: String });
-const Token = mongoose.model('Token', TokenSchema);
-const MsgMap = mongoose.model('MsgMap', MsgMapSchema);
+const PORT = process.env.PORT || 3000;
 
-// הגדרות Google OAuth2
-const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI
-);
+async function runDiagnostics() {
+    console.log('🔍 --- מתחיל סבב בדיקות מערכת מקיף ---');
 
-// 1. נתיב בדיקה (Health Check) - לוודא שהשרת עונה ולא נותן 502
-app.get('/health', (req, res) => {
-    res.send('OK - Server is alive');
-});
-
-// 2. נתיבי אימות גוגל
-app.get('/auth/google', (req, res) => {
-    const url = oauth2Client.generateAuthUrl({
-        access_type: 'offline',
-        scope: ['https://www.googleapis.com/auth/gmail.modify'],
-        prompt: 'consent'
+    // 1. בדיקת משתני סביבה (Env Vars)
+    const required = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI', 'MONGODB_URI', 'MY_PHONE_NUMBER'];
+    console.log('1️⃣ בודק משתני סביבה...');
+    required.forEach(v => {
+        if (!process.env[v]) console.error(`❌ חסר משתנה סביבה קריטי: ${v}`);
+        else console.log(`✅ משתנה ${v} נמצא.`);
     });
-    res.redirect(url);
-});
 
-app.get('/oauth2callback', async (req, res) => {
-    try {
-        const { code } = req.query;
-        const { tokens } = await oauth2Client.getToken(code);
-        // שמירת הטוקן עבור המשתמש הראשי
-        await Token.findOneAndUpdate({ userId: 'primary' }, { tokens }, { upsert: true });
-        oauth2Client.setCredentials(tokens);
-        res.send('✅ החיבור לגוגל הצליח! המערכת מתחילה לסרוק מיילים.');
-    } catch (error) {
-        console.error('OAuth Error:', error);
-        res.status(500).send('שגיאה בתהליך האימות מול גוגל');
+    // 2. בדיקת קיום דפדפן (Chromium) - הגורם מס' 1 לקריסות וואטסאפ
+    console.log('2️⃣ בודק הימצאות Chromium...');
+    const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+    if (fs.existsSync(chromePath)) {
+        console.log(`✅ Chromium נמצא בנתיב: ${chromePath}`);
+        try {
+            const version = execSync(`${chromePath} --version`).toString();
+            console.log(`ℹ️ גרסת דפדפן: ${version.trim()}`);
+        } catch (e) {
+            console.error('❌ נמצא דפדפן אבל הוא לא מצליח לרוץ! בדוק הרשאות.');
+        }
+    } else {
+        console.error(`❌ שגיאה קריטית: לא נמצא דפדפן בנתיב ${chromePath}. הבוט יקרוס!`);
     }
+
+    // 3. בדיקת חיבור ל-MongoDB
+    console.log('3️⃣ מנסה להתחבר למסד הנתונים...');
+    try {
+        await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
+        console.log('✅ חיבור ל-MongoDB Atlas הצליח!');
+    } catch (e) {
+        console.error('❌ שגיאת חיבור ל-MongoDB! וודא שכתובת ה-IP של Railway מאושרת ב-Whitelist של Atlas.');
+        console.error(`פרטי שגיאה: ${e.message}`);
+    }
+
+    // 4. בדיקת רשת ופורטים
+    console.log('4️⃣ בודק הגדרות רשת...');
+    console.log(`ℹ️ הפורט המוגדר ב-Railway הוא: ${process.env.PORT}`);
+    console.log(`ℹ️ האפליקציה תנסה להקשיב בפורט: ${PORT}`);
+
+    console.log('--- סיום בדיקות מקדימות ---');
+}
+
+// נתיב Health Check ציבורי - זה הדבר הראשון שאתה בודק בדפדפן!
+app.get('/diag', (req, res) => {
+    res.json({
+        status: 'Online',
+        port: PORT,
+        env_check: 'Check logs for details',
+        timestamp: new Date().toISOString()
+    });
 });
 
-// חיבור ל-MongoDB והפעלת הבוט
-mongoose.connect(process.env.MONGODB_URI)
-    .then(() => {
-        console.log('✅ Connected to MongoDB Atlas');
+// הפעלת השרת
+app.listen(PORT, "0.0.0.0", async () => {
+    console.log(`🌍 שרת הדיאגנוסטיקה רץ בפורט ${PORT} ומקשיב לכל העולם (0.0.0.0)`);
+    await runDiagnostics();
+});
 
-        const client = new Client({
-            authStrategy: new RemoteAuth({
-                store: new MongoStore({ mongoose: mongoose }),
-                backupSyncIntervalMs: 300000
-            }),
-            puppeteer: {
-                // נתיב קריטי עבור Railway
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-            }
-        });
-
-        client.on('qr', qr => {
-            console.log('--- SCAN THIS QR CODE ---');
-            qrcode.generate(qr, { small: true });
-        });
-
-        client.on('ready', () => {
-            console.log('🚀 WhatsApp Client is ready!');
-        });
-
-        client.initialize();
-
-        // הפעלת השרת על 0.0.0.0 - קריטי למניעת 502 ב-Railway
-        app.listen(port, "0.0.0.0", () => {
-            console.log(`🌍 Server is listening on port ${port}`);
-        });
-    })
-    .catch(err => {
-        console.error('❌ MongoDB Connection Error:', err);
-    });
+// טיפול בשגיאות לא צפויות כדי למנוע 502 שקט
+process.on('uncaughtException', (err) => {
+    console.error('💥 שגיאה לא צפויה (Uncaught Exception):', err);
+});
