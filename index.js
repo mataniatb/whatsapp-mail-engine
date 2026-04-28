@@ -3,13 +3,14 @@ const { MongoStore } = require('wwebjs-mongo');
 const mongoose = require('mongoose');
 const { google } = require('googleapis');
 const express = require('express');
-const qrcode = require('qrcode'); // שינוי לספריה שמייצרת תמונה
+const qrcode = require('qrcode'); 
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-let lastQr = null; // משתנה לשמירת ה-QR האחרון
+let lastQr = null; 
 let gmail;
+const MY_NUMBER = '972542501176@c.us'; // המספר המעודכן שלך
 
 const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -17,38 +18,45 @@ const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_REDIRECT_URI
 );
 
-// --- 1. ממשק אינטרנט משופר ---
+// --- 1. ממשק ניהול (Web Interface) ---
 
-// דף הבית
 app.get('/', (req, res) => {
     res.send(`
-        <div style="font-family: sans-serif; text-align: center; padding: 50px;">
-            <h1>מערכת WhatsApp-Gmail מחוברת</h1>
-            <p>סטטוס: המערכת רצה בפורט ${port}</p>
+        <div style="font-family: sans-serif; text-align: center; padding: 50px; direction: rtl;">
+            <h1>מערכת WhatsApp-Gmail פעילה</h1>
+            <p>השרת רץ בהצלחה בפורט ${port}</p>
             <div style="margin-top: 20px;">
-                <a href="/qr" style="padding: 10px 20px; background: #25D366; color: white; text-decoration: none; border-radius: 5px;">לחץ כאן לסריקת QR לוואטסאפ</a>
+                <a href="/qr" style="padding: 15px 25px; background: #25D366; color: white; text-decoration: none; border-radius: 8px; font-weight: bold;">1. לחץ כאן לסריקת QR</a>
             </div>
-            <div style="margin-top: 10px;">
-                <a href="/auth/google" style="padding: 10px 20px; background: #4285F4; color: white; text-decoration: none; border-radius: 5px;">לחץ כאן לחיבור לגוגל</a>
+            <div style="margin-top: 20px;">
+                <a href="/auth/google" style="padding: 15px 25px; background: #4285F4; color: white; text-decoration: none; border-radius: 8px; font-weight: bold;">2. לחץ כאן לחיבור גוגל</a>
             </div>
         </div>
     `);
 });
 
-// נתיב ה-QR החדש
 app.get('/qr', async (req, res) => {
     if (!lastQr) {
-        return res.send('<h1>ה-QR עדיין לא נוצר או שהמכשיר כבר מחובר.</h1><p>בדוק את הלוגים אם יש שגיאה.</p>');
+        return res.send('<h1 style="text-align:center;">ה-QR טרם נוצר או שהמכשיר כבר מחובר.</h1><p style="text-align:center;">חזור לדף הבית ובדוק אם הוואטסאפ מגיב.</p>');
     }
     const code = await qrcode.toDataURL(lastQr);
     res.send(`
         <div style="font-family: sans-serif; text-align: center; padding: 20px;">
             <h2>סרוק את הקוד כדי לחבר את הוואטסאפ:</h2>
-            <img src="${code}" style="border: 10px solid white; box-shadow: 0 0 10px rgba(0,0,0,0.1);" />
-            <p>הדף יתעדכן אוטומטית כשהחיבור יצליח.</p>
+            <img src="${code}" style="border: 10px solid white; box-shadow: 0 0 15px rgba(0,0,0,0.2);" />
+            <p>הדף מתרענן כל 15 שניות...</p>
             <script>setTimeout(() => location.reload(), 15000);</script>
         </div>
     `);
+});
+
+app.get('/auth/google', (req, res) => {
+    const url = oauth2Client.generateAuthUrl({
+        access_type: 'offline',
+        scope: ['https://www.googleapis.com/auth/gmail.modify'],
+        prompt: 'consent'
+    });
+    res.redirect(url);
 });
 
 app.get('/oauth2callback', async (req, res) => {
@@ -59,7 +67,7 @@ app.get('/oauth2callback', async (req, res) => {
         await Token.findOneAndUpdate({ userId: 'primary' }, { tokens }, { upsert: true });
         oauth2Client.setCredentials(tokens);
         gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-        res.send('✅ החיבור לגוגל הצליח!');
+        res.send('<h1 style="text-align:center;">✅ החיבור לגוגל הצליח! אפשר לסגור את הלשונית.</h1>');
     } catch (e) { res.status(500).send('Google Auth Error'); }
 });
 
@@ -68,17 +76,19 @@ app.listen(port, "0.0.0.0", () => {
     initializeSystem();
 });
 
-// --- 2. מנוע המערכת ---
+// --- 2. מנוע המערכת (WhatsApp & Gmail) ---
 
 async function initializeSystem() {
     try {
         await mongoose.connect(process.env.MONGODB_URI);
-        
+        console.log('✅ MongoDB connected');
+
         const Token = mongoose.models.Token || mongoose.model('Token', new mongoose.Schema({ userId: String, tokens: Object }));
         const storedToken = await Token.findOne({ userId: 'primary' });
         if (storedToken) {
             oauth2Client.setCredentials(storedToken.tokens);
             gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+            console.log('✅ Google tokens loaded');
         }
 
         const client = new Client({
@@ -93,13 +103,13 @@ async function initializeSystem() {
         });
 
         client.on('qr', qr => {
-            lastQr = qr; // שמירת הקוד להצגה בלינק
-            console.log('⚡ QR Code generated. View it at: /qr');
+            lastQr = qr;
+            console.log('⚡ New QR generated. Access it via /qr');
         });
 
         client.on('ready', () => {
-            lastQr = null; // ניקוי הקוד ברגע שמחוברים
-            console.log('🚀 WhatsApp Ready!');
+            lastQr = null;
+            console.log('🚀 WhatsApp is Ready!');
             startEmailSync(client);
         });
 
@@ -108,14 +118,28 @@ async function initializeSystem() {
 }
 
 function startEmailSync(whatsappClient) {
+    console.log('📧 Email sync started (every 5 min)');
     setInterval(async () => {
         if (!gmail) return;
         try {
-            const res = await gmail.users.messages.list({ userId: 'me', q: 'is:unread', maxResults: 1 });
+            const res = await gmail.users.messages.list({ userId: 'me', q: 'is:unread', maxResults: 3 });
             if (res.data.messages) {
-                console.log(`Checking emails... found new mail.`);
-                // כאן תוכל להוסיף את שליחת ההודעה למספר שלך
+                for (const msgInfo of res.data.messages) {
+                    const msg = await gmail.users.messages.get({ userId: 'me', id: msgInfo.id });
+                    const subject = msg.data.payload.headers.find(h => h.name === 'Subject')?.value || 'ללא נושא';
+                    const snippet = msg.data.snippet;
+
+                    // שליחה לוואטסאפ שלך
+                    await whatsappClient.sendMessage(MY_NUMBER, `📬 *מייל חדש הגיע!*\n\n*נושא:* ${subject}\n*תוכן:* ${snippet}\n\n_נשלח אוטומטית מהשרת_`);
+                    
+                    // סימון כנקרא כדי שלא יישלח שוב
+                    await gmail.users.messages.modify({
+                        userId: 'me',
+                        id: msgInfo.id,
+                        resource: { removeLabelIds: ['UNREAD'] }
+                    });
+                }
             }
         } catch (err) { console.error('Sync Error:', err); }
-    }, 300000);
+    }, 300000); // 5 דקות
 }
