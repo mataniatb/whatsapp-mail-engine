@@ -89,8 +89,18 @@ app.get('/oauth2callback', async (req, res) => {
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: './sessions' }),
     puppeteer: {
+        headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage', // פותר את רוב בעיות הזיכרון ב-Railway
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--single-process' // גורם לכל הדפדפן לרוץ כתהליך אחד חסכוני
+        ]
     }
 });
 
