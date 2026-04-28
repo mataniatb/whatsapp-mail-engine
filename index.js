@@ -3,14 +3,14 @@ const mongoose = require('mongoose');
 const { google } = require('googleapis');
 const express = require('express');
 const qrcode = require('qrcode');
-const path = require('path');
 
 const app = express();
-const port = process.env.PORT || 3000; // מוגדר ל-3000 לפי בקשתך
+const port = process.env.PORT || 3000;
 
 let lastQr = null; 
 let gmail;
-const MY_NUMBER = '972542501176@c.us'; // המספר שלך
+let isClientReady = false; // משתנה לבדיקת מוכנות הבוט
+const MY_NUMBER = '972542501176@c.us';
 
 const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -18,157 +18,97 @@ const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_REDIRECT_URI
 );
 
-// --- ממשק ניהול (Web) ---
-
+// --- ממשק Web ---
 app.get('/', (req, res) => {
-    res.send(`
-        <div style="font-family: sans-serif; text-align: center; padding: 50px; direction: rtl;">
-            <h1>מערכת WhatsApp-Gmail פעילה</h1>
-            <p>השרת מאזין בפורט: ${port}</p>
-            <div style="margin-top: 20px;">
-                <a href="/qr" style="padding: 15px 25px; background: #25D366; color: white; text-decoration: none; border-radius: 8px; font-weight: bold;">1. סרוק QR לוואטסאפ</a>
-            </div>
-            <div style="margin-top: 20px;">
-                <a href="/auth/google" style="padding: 15px 25px; background: #4285F4; color: white; text-decoration: none; border-radius: 8px; font-weight: bold;">2. חבר חשבון גוגל</a>
-            </div>
-        </div>
-    `);
+    res.send(`<div style="font-family:sans-serif;text-align:center;padding:50px;direction:rtl;">
+        <h1>מערכת WhatsApp-Gmail</h1>
+        <p>סטטוס וואטסאפ: ${isClientReady ? '✅ מחובר' : '⏳ ממתין לחיבור'}</p>
+        <a href="/qr" style="padding:10px;background:#25D366;color:white;text-decoration:none;">סריקת QR</a> | 
+        <a href="/auth/google" style="padding:10px;background:#4285F4;color:white;text-decoration:none;">חיבור גוגל</a>
+    </div>`);
 });
 
 app.get('/qr', async (req, res) => {
-    if (!lastQr) {
-        return res.send('<h1 style="text-align:center;">הבוט מחובר או שהקוד טרם נוצר. רענן בעוד כמה שניות.</h1>');
-    }
+    if (!lastQr) return res.send('<h1>אין QR - המכשיר מחובר או בטעינה.</h1>');
     const code = await qrcode.toDataURL(lastQr);
-    res.send(`
-        <div style="text-align:center; padding:20px; font-family:sans-serif;">
-            <h2>סרוק את הקוד ב-Linked Devices בוואטסאפ:</h2>
-            <img src="${code}" style="border: 5px solid #25D366; border-radius: 10px;" />
-            <p>הדף מתרענן כל 10 שניות...</p>
-            <script>setTimeout(() => location.reload(), 10000);</script>
-        </div>
-    `);
+    res.send(`<div style="text-align:center;"><img src="${code}" /><script>setTimeout(()=>location.reload(),10000);</script></div>`);
 });
 
 app.get('/auth/google', (req, res) => {
-    const url = oauth2Client.generateAuthUrl({
-        access_type: 'offline',
-        scope: ['https://www.googleapis.com/auth/gmail.modify'],
-        prompt: 'consent'
-    });
-    res.redirect(url);
+    res.redirect(oauth2Client.generateAuthUrl({ access_type: 'offline', scope: ['https://www.googleapis.com/auth/gmail.modify'], prompt: 'consent' }));
 });
 
 app.get('/oauth2callback', async (req, res) => {
-    try {
-        const { code } = req.query;
-        const { tokens } = await oauth2Client.getToken(code);
-        
-        const Token = mongoose.models.Token || mongoose.model('Token', new mongoose.Schema({ userId: String, tokens: Object }));
-        await Token.findOneAndUpdate({ userId: 'primary' }, { tokens }, { upsert: true });
-        
-        oauth2Client.setCredentials(tokens);
-        gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-        res.send('<h1 style="text-align:center; color:green;">✅ החיבור לגוגל הצליח!</h1>');
-    } catch (e) {
-        console.error('Google Auth Error:', e);
-        res.status(500).send('שגיאה בחיבור לגוגל');
+    const { tokens } = await oauth2Client.getToken(req.query.code);
+    const Token = mongoose.models.Token || mongoose.model('Token', new mongoose.Schema({ userId: String, tokens: Object }));
+    await Token.findOneAndUpdate({ userId: 'primary' }, { tokens }, { upsert: true });
+    oauth2Client.setCredentials(tokens);
+    gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    res.send('<h1>✅ גוגל מחובר!</h1>');
+});
+
+// --- אתחול והגנות ---
+const client = new Client({
+    authStrategy: new LocalAuth({ dataPath: './sessions' }),
+    puppeteer: {
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
     }
 });
 
-// --- אתחול השרת והמערכות ---
+client.on('qr', qr => { lastQr = qr; isClientReady = false; });
+client.on('ready', () => { 
+    lastQr = null; 
+    isClientReady = true; 
+    console.log('🚀 WhatsApp is READY!'); 
+});
+client.on('disconnected', () => { isClientReady = false; });
+
+async function initializeSystem() {
+    await mongoose.connect(process.env.MONGODB_URI);
+    const Token = mongoose.models.Token || mongoose.model('Token', new mongoose.Schema({ userId: String, tokens: Object }));
+    const storedToken = await Token.findOne({ userId: 'primary' });
+    if (storedToken) {
+        oauth2Client.setCredentials(storedToken.tokens);
+        gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    }
+    client.initialize();
+}
 
 app.listen(port, "0.0.0.0", () => {
-    console.log(`🚀 Server live on port ${port}`);
+    console.log(`🚀 Server on ${port}`);
     initializeSystem();
 });
 
-async function initializeSystem() {
-    try {
-        await mongoose.connect(process.env.MONGODB_URI);
-        console.log('✅ MongoDB Connected');
-
-        // טעינת טוקנים של גוגל אם קיימים
-        const Token = mongoose.models.Token || mongoose.model('Token', new mongoose.Schema({ userId: String, tokens: Object }));
-        const storedToken = await Token.findOne({ userId: 'primary' });
-        if (storedToken) {
-            oauth2Client.setCredentials(storedToken.tokens);
-            gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-            console.log('✅ Google Auth Restored');
-        }
-
-        const client = new Client({
-            authStrategy: new LocalAuth({
-                dataPath: './sessions' // שמירת החיבור בתיקייה מקומית בשרת
-            }),
-            puppeteer: {
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--single-process', '--no-zygote']
-            }
-        });
-
-        client.on('qr', qr => {
-            lastQr = qr;
-            console.log('⚡ QR Code Generated');
-        });
-
-        client.on('ready', () => {
-            lastQr = null;
-            console.log('🚀 WhatsApp is READY!');
-            startEmailSync(client);
-        });
-
-        client.on('authenticated', () => {
-            console.log('✅ WhatsApp Authenticated and Session Saved');
-        });
-
-        client.on('auth_failure', msg => {
-            console.error('❌ Auth Failure:', msg);
-        });
-
-        await client.initialize();
-    } catch (err) {
-        console.error('Initialization Error:', err);
+// --- סנכרון עם הגנה משגיאות ---
+setInterval(async () => {
+    if (!gmail || !isClientReady) {
+        console.log('⏳ ממתין לחיבור גוגל וואטסאפ...');
+        return;
     }
-}
+    try {
+        const res = await gmail.users.messages.list({ userId: 'me', q: 'is:unread', maxResults: 5 });
+        if (res.data.messages) {
+            for (const msgInfo of res.data.messages) {
+                const msg = await gmail.users.messages.get({ userId: 'me', id: msgInfo.id });
+                const subject = msg.data.payload.headers.find(h => h.name === 'Subject')?.value || 'ללא נושא';
+                const from = msg.data.payload.headers.find(h => h.name === 'From')?.value || 'לא ידוע';
 
-// --- מנוע סנכרון המיילים ---
-
-function startEmailSync(whatsappClient) {
-    console.log('📧 Email sync engine started (1 minute interval)');
-    
-    setInterval(async () => {
-        if (!gmail) return;
-        
-        try {
-            console.log('🔍 Checking for unread emails...');
-            const res = await gmail.users.messages.list({ userId: 'me', q: 'is:unread', maxResults: 5 });
-            
-            if (res.data.messages) {
-                console.log(`📩 Found ${res.data.messages.length} new messages.`);
-                
-                for (const msgInfo of res.data.messages) {
-                    const msg = await gmail.users.messages.get({ userId: 'me', id: msgInfo.id });
+                try {
+                    // הוספת בדיקה: האם הדפדפן עדיין חי?
+                    await client.sendMessage(MY_NUMBER, `📬 *מייל חדש!*\nמאת: ${from}\nנושא: ${subject}`);
                     
-                    const subject = msg.data.payload.headers.find(h => h.name === 'Subject')?.value || 'ללא נושא';
-                    const from = msg.data.payload.headers.find(h => h.name === 'From')?.value || 'שולח לא ידוע';
-                    const snippet = msg.data.snippet;
-
-                    // שליחה לוואטסאפ
-                    const messageBody = `📬 *מייל חדש הגיע!*\n\n*מאת:* ${from}\n*נושא:* ${subject}\n*תוכן:* ${snippet}\n\n_נשלח אוטומטית מהבוט שלך_`;
-                    await whatsappClient.sendMessage(MY_NUMBER, messageBody);
-                    
-                    // סימון כנקרא כדי לא לשלוח שוב
                     await gmail.users.messages.modify({
-                        userId: 'me',
-                        id: msgInfo.id,
+                        userId: 'me', id: msgInfo.id,
                         resource: { removeLabelIds: ['UNREAD'] }
                     });
-                    console.log(`✅ Forwarded and marked as read: ${subject}`);
+                    console.log(`✅ נשלח: ${subject}`);
+                } catch (sendErr) {
+                    console.error('❌ תקלה בשליחה (Frame detached). מנסה לאתחל דפדפן...');
+                    // אם יש שגיאת Frame, נאלץ את הבוט להתחבר מחדש
+                    process.exit(1); // Railway יפעיל את השרת מחדש אוטומטית
                 }
             }
-        } catch (err) {
-            console.error('Sync Error:', err);
         }
-    }, 60000); // בדיקה כל דקה אחת
-}
+    } catch (err) { console.error('Sync Error:', err); }
+}, 60000);
